@@ -1,0 +1,498 @@
+---
+title: "Foraging Activity Budget Scan Analysis 2007-2018"
+output: html_document
+---
+
+
+```
+
+## R Markdown 
+
+
+---
+title: "Foraging Activity Budget Script for Combined Scan Data 2007-2018"
+output: html_notebook
+
+#missing dom data for LV (2007), PR (2016), and SF (2017)
+
+#removed Helen from dominance and reproductive status since this dataset is subsetted by adult females
+
+#behavioral data file has PR removed for 2016 (no dominance data) and SF removed for 2017 (disappeared mid season). LV rank has been assumed same as 2007 for 2007
+
+#removed erroneous scans where individual from a different group was mistakenly recorded (ie, observing Kiara when cleary the researcher was with LV)
+
+#rotations split when RS changes. This occurred 8 times. For one AD rotation, 2 monkeys changed RS and rotation was split into 3. Rotation also split during extreme weather events (>10 cm of rain in 24 hrs)
+---
+```{r}
+memory.limit(size=9000)
+
+library(dplyr)
+library(ggplot2)
+library(lme4)
+library(emmeans)
+library(lubridate)
+library(tidyverse)
+library(fuzzyjoin)
+library(car)
+library(xlsx)
+library(gridExtra)
+library(grid)
+library(gtable)
+library(ggpubr)
+library(DataCombine)
+library(see)
+library(extrafont)
+library(multcompView)
+library(ggpubr)
+library(lsmeans)
+library(multcomp)
+library(tidytext)
+
+```
+#budget analysis
+
+```{r}
+#reading in reproductive status (RS) table that contains RS data for every adult female from the years 2007, 2008, 2016, 2017, 2018
+repStatusTable <- read.csv("RepStatusTable_withoutHL_UpdatedMay4.csv") 
+
+#renaming MonkeyName column
+repStatusTable <- repStatusTable %>% 
+           rename(
+           MonkeyName = ï..MonkeyName,
+   
+                         )
+#setting as DF object
+repStatusTable <- as.data.frame(repStatusTable)
+
+#Setting StartDate and EndDate as Date objects to facilitate join
+repStatusTable$StartDate <- parse_date_time(repStatusTable$StartDate, orders = "mdy")
+repStatusTable <- repStatusTable %>% mutate(StartDate = as_datetime(StartDate))
+repStatusTable$StartDate <- as.Date(repStatusTable$StartDate)
+repStatusTable$EndDate <- parse_date_time(repStatusTable$EndDate, orders = "mdy")
+repStatusTable <- repStatusTable %>% mutate(EndDate = as_datetime(EndDate))
+repStatusTable$EndDate <- as.Date(repStatusTable$EndDate)
+
+
+#Reading in Dominance table that contains rankings for every adult female for the years 2007, 2008, 2016, 2017, 2018
+dominanceTable <- read.csv("Dom_20072018.csv")
+dominanceTable <- as.data.frame(dominanceTable)
+
+#Setting DateStart and DateEnd as Date objects to facilitate the join
+dominanceTable$DateStart <- parse_date_time(dominanceTable$DateStart, orders = "mdy")
+dominanceTable <- dominanceTable %>% mutate(DateStart = as_datetime(DateStart))
+dominanceTable$DateStart <- as.Date(dominanceTable$DateStart)
+dominanceTable$DateEnd <- parse_date_time(dominanceTable$DateEnd, orders = "mdy")
+dominanceTable <- dominanceTable %>% mutate(DateEnd = as_datetime(DateEnd))
+dominanceTable$DateEnd <- as.Date(dominanceTable$DateEnd)
+
+#Reading in behavioral data that contains 62,251 scans 
+behavData <- read.csv("Scans_Combined_Mar10.csv") 
+behavData <- as.data.frame(behavData)
+
+#Removing duplicate monkeys for each unique date + time combo. Now 61,569 scans
+behavData <- behavData %>% distinct(MonkeyCode, DateTime, .keep_all = TRUE)
+
+#Subsetting to just adult females, which whittles it down to 22,053 scans
+behavData<- behavData[behavData$Sex == "F" & behavData$Age == "A",]
+
+
+#Removing unused levels
+behavData <- droplevels(behavData)
+
+#Setting DateTime as a DateTime object
+behavData$DateTime <- parse_date_time(behavData$DateTime, orders = "mdy HM")
+behavData <- behavData %>% mutate(DateTime = as_datetime(DateTime))
+behavData$DateTime <- as.Date(behavData$DateTime)
+
+
+#Reading in .csv that contains rotation numbers for each date of observation
+combinedDF_rot <- read.csv("Rotation_Dates_UpdatedMay13.csv")
+combinedDF_rot <- as.data.frame(combinedDF_rot)
+
+#Setting DateTime as a date object
+combinedDF_rot$DateOfYear <- parse_date_time(combinedDF_rot$DateOfYear, orders = "mdy")
+combinedDF_rot <- combinedDF_rot %>% mutate(DateTime = as_datetime(DateOfYear)) %>%
+  dplyr::select(-DateOfYear)
+combinedDF_rot$DateTime <- as.Date(combinedDF_rot$DateTime)
+
+
+combinedDF_rot <- combinedDF_rot %>%
+
+                 dplyr::select(-X) %>% 
+            
+                 distinct()
+
+#Joining rotation numbers to behavioral data
+behavData <- behavData %>% left_join(., combinedDF_rot, by = c("DateTime" = "DateTime"))
+                                                            
+#Setting rotation as a factor
+behavData$Rotation <- as.factor(behavData$Rotation)
+behavData$Phenotype <- as.factor(behavData$Phenotype)
+behavData$MonkeyCode <- as.factor(behavData$MonkeyCode)
+behavData$Group <- as.factor(behavData$Group)
+#Fuzzy left joining reproductive status to behavioral data
+behavDataRepStatus <- behavData %>%
+            fuzzy_left_join(., repStatusTable, by = c("MonkeyCode" = "MonkeyCode", "DateTime" = "StartDate", "DateTime" = "EndDate"), match_fun = list(`==`, `>=`, `<=`))
+
+#Removing extra columns that fuzzy join adds
+behavDataRepStatus <- behavDataRepStatus %>%
+                      dplyr::select(-MonkeyName.y, -MonkeyCode.y, -StartDate, -EndDate) 
+
+
+#Renaming MonkeyCode
+behavDataRepStatus <- behavDataRepStatus %>%
+              rename(MonkeyCode = MonkeyCode.x)
+
+#Renaming Monkey Name
+behavDataRepStatus <- behavDataRepStatus %>%
+              rename(MonkeyName = MonkeyName.x)
+
+#setting Rep Status as factor
+behavDataRepStatus$ReproductiveStatus <- as.factor(behavDataRepStatus$ReproductiveStatus)
+
+#Fuzzy left joining dominance to new behavioral data DF
+combinedDF <- behavDataRepStatus %>% 
+              fuzzy_left_join(., dominanceTable, 
+                              by = c("MonkeyCode" = "MonkeyCode", "DateTime" = "DateStart", "DateTime" = "DateEnd"), match_fun = 
+                              list(`==`, `>=`, `<=`))
+
+
+
+
+#Removing columns we don't need, and renaming "MonkeyCode.x"
+combinedDF <- combinedDF %>%
+              dplyr::select(-MonkeyCode.y, -DateStart, -DateEnd)
+combinedDF <- combinedDF %>%
+              rename(MonkeyCode = MonkeyCode.x)
+
+
+#Reading in DF that contains temperature and rainfall values for 2007, 2008, 2016, 2017, 2018 study periods
+weatherData <- read.csv("WeatherData_2007_2018.csv") 
+weatherData <- as.data.frame(weatherData)
+weatherData$DateTime <- parse_date_time(weatherData$DateTime, orders = "mdy")
+weatherData <- weatherData %>% mutate(DateTime = as_datetime(DateTime))
+weatherData$DateTime <- as.Date(weatherData$DateTime)
+
+#Joining weather data to combinedDF
+combinedDF1 <- combinedDF %>% left_join(., weatherData, by = c("DateTime" = "DateTime"))
+
+#Grouping by variables of interest
+df_budget <- combinedDF1 %>% 
+  group_by(DateTime, MonkeyCode, MonkeyName, Phenotype, Group, State, DominanceScale, ReproductiveStatus, TempMax, TempMin, Rain) 
+  
+
+#These lines count each state for each monkey per rotation and spread them so that one line = one monkeys combined states per rotation
+df_budget <- df_budget %>%  summarise(Count=n())
+df_budget <- df_budget %>% ungroup()
+df_budget <- df_budget %>% spread(State,Count)
+
+#Joining rotation to df_budget again since it was lost with group by, setting rotation as factor
+df_budget <- df_budget %>% left_join(., combinedDF_rot, by = c("DateTime" = "DateTime"))
+df_budget$Rotation <- as.factor(df_budget$Rotation)
+
+#Setting NA's to zero
+df_budget[c("EFI", "FFR", "FIN", "FOT","RES", "SAC","TRA","VFO", "OTH", "SDI", "PLA", "SAG", "VIG", "DRI")][is.na(df_budget[c("EFI", "FFR", "FIN", "FOT","RES", "SAC", "TRA","VFO", "OTH", "SDI", "PLA", "SAG", "VIG", "DRI")])] <- 0
+```
+
+
+```{r}
+#Z-transforming ecological variables
+df_transformed <- df_budget %>%
+       mutate_at(vars("TempMax", "TempMin", "Rain"), list(~as.numeric(scale(.)))) 
+
+
+df_budget2 <- df_transformed %>%
+              group_by(Rotation, MonkeyCode) %>%
+              summarise(
+                        Group = unique(Group),
+                        TempMax = mean(TempMax),
+                        TempMin = mean(TempMin),
+                        Rain = mean(Rain),
+                        DRI = sum(DRI),
+                        EFI = sum(EFI),
+                        FFR = sum(FFR),
+                        FIN = sum(FIN),
+                        FOT = sum(FOT),
+                        OTH = sum(OTH),
+                        PLA = sum(PLA),
+                        RES = sum(RES),
+                        SAC = sum(SAC),
+                        SAG = sum(SAG),
+                        SDI = sum(SDI),
+                        TRA = sum(TRA),
+                        VFO = sum(VFO),
+                        VIG = sum(VIG),
+                        DominanceScale = mean(DominanceScale),
+                        ReproductiveStatus = unique(ReproductiveStatus),
+                        Phenotype = unique(Phenotype))
+
+                         #if rotations spanned the end of a month, the month the rotation started is included in the grouped df
+
+
+
+#Setting dominance scale as a category
+df_budget2$DominanceCategory <- if_else(df_budget2$DominanceScale <= 0.33, "low", if_else(df_budget2$DominanceScale > 0.33 & df_budget2$DominanceScale <= 0.66, "mid","high"))
+df_budget2$DominanceCategory <- as.factor(df_budget2$DominanceCategory)
+
+#This line takes the original behavioral dataset, groups by monkey and rotation, and counts how many scans each monkey was observed per rotation
+totals <- behavData %>% group_by(Rotation = as.factor(Rotation), MonkeyCode = as.factor(MonkeyCode)) %>% 
+  summarise(TotalScans=n())
+
+#Joining TotalScans  column from above to df_budget, so that every monkey per rotation has their total scans from that rotation in a seperate column
+df_budget2 <- df_budget2 %>% left_join(., totals, by = c("Rotation" = "Rotation", 
+                                                            "MonkeyCode" = "MonkeyCode"))
+
+
+#Filtering only monkeys that have 3 or greater total scans per rotation
+df_budget2 <- df_budget2[!(df_budget2$TotalScans < 3),]
+
+
+
+#Creating new column that is total foraging scans
+df_budget2$TotalForaging <- c(df_budget2$EFI + df_budget2$FFR +
+                                          df_budget2$FIN + df_budget2$FOT)
+                                          
+
+#Replacing "D" and "T" with "Dichromat" and "Trichromat"
+df_budget2$Phenotype <- Recode(df_budget2$Phenotype, "'D'='Dichromat'; 'T'='Trichromat'")
+```
+
+#General foraging model, looking at total foraging scans (as proportion of total scans) in response to phenotype, dominance, RS, and controlling for monkey ID and group
+
+```{r}
+
+GeneralForagingModel <- glmer(TotalForaging ~  
+                                Phenotype + 
+                                DominanceCategory +
+                                ReproductiveStatus +
+                                TempMax +
+                                TempMin +
+                                Rain +
+                                offset(log(TotalScans)) + 
+                                (1 | Group/MonkeyCode),
+                              data = df_budget2,
+                              family = poisson(link = "log"))
+
+summary(GeneralForagingModel)
+drop1(GeneralForagingModel, test = "Chisq")
+Anova(GeneralForagingModel)
+
+
+#Statistics on the model
+ForagingModel.lsm <- emmeans(GeneralForagingModel, "Phenotype", type = "response", adjust = "tukey") #This function displays the LSM
+
+pairs(ForagingModel.lsm)
+pairs(emmeans(GeneralForagingModel, "Phenotype", adjust = "tukey"))
+
+ForagingModel.cld <- cld(ForagingModel.lsm)
+
+ForagingModel.lsm.cld.tukey <- cld.emmGrid(ForagingModel.lsm, alpha = 0.05, Letters = letters, adjust = "tukey") #This function creates a compact letter display of the LSM enabling use with ggplot. It also adds a Tukey adjustment to test for honest significant difference between the means.
+   
+```
+
+
+#Surface-dwelling insect foraging model, looking at insect foraging scans (as proportion of total scans) in response to phenotype, dominance, RS, and controlling for monkey ID and group
+``` {r}
+
+InsectForagingModel <- glmer(FIN ~  
+                               
+                                Phenotype + 
+                                DominanceCategory +
+                               ReproductiveStatus +
+                               TempMax +
+                               TempMin + 
+                               Rain +
+                                offset(log(TotalScans)) + 
+                                (1 | Group/MonkeyCode), 
+                              data = df_budget2,
+                              family = poisson(link = "log"),control = glmerControl(optCtrl = list(maxfun = 1500000)))
+
+
+summary(InsectForagingModel)
+drop1(InsectForagingModel, test = "Chisq")
+Anova(InsectForagingModel)
+
+#Statistics on the model
+InsectModel.lsm <- emmeans(InsectForagingModel, "Phenotype", type = "response", adjust = "tukey") #This function displays the LSM   
+
+pairs(InsectModel.lsm)
+pairs(emmeans(InsectForagingModel, "Phenotype", adjust = "tukey"))
+
+```
+
+
+#Fruit foraging model, looking at fruit foraging scans (as proportion of total scans) in response to phenotype, dominance, RS, and controlling for monkey ID and group
+```{r}
+FruitFeedingModel <- glmer(FFR ~  
+                                 
+                                   Phenotype + 
+                                   DominanceCategory +
+                                    ReproductiveStatus +
+                                    TempMax + 
+                                    TempMin +
+                                    Rain +
+                                   offset(log(TotalScans)) + 
+                                   (1 | Group/MonkeyCode), 
+                                 data = df_budget2,
+                                 family = poisson(link = "log"),control = glmerControl(optCtrl = list(maxfun = 1500000)))
+summary(FruitFeedingModel)
+drop1(FruitFeedingModel, test = "Chisq")
+Anova(FruitFeedingModel)
+
+
+#Statistics on the model
+
+FruitModel.lsm <- emmeans(FruitFeedingModel, "Phenotype", type = "response", adjust = "tukey") #This function displays the LSM
+
+pairs(FruitModel.lsm)
+pairs(emmeans(FruitFeedingModel, "Phenotype", adjust = "tukey"))
+
+```
+
+
+###The chunk below takes the finalized, but ungrouped, dataframe (with all relevant variables added) and adds fruit taxon color data to analyze scans spent on specifically on conpsicuous fruits (to TRICHROMATS only!)
+```{r}
+fruit_cat_df <- combinedDF1
+
+fruit_cat_df <- fruit_cat_df %>%
+  dplyr::select(-ColourCategory) 
+
+#Subset of scan data that is foraging
+df_forage <- fruit_cat_df[fruit_cat_df$State == "VFO"|fruit_cat_df$State == "FFR"|fruit_cat_df$State == "EFI"|fruit_cat_df$State == "FIN"|fruit_cat_df$State =="FOT",]
+
+#Subset of scan data that is fruit feeding
+df_fruit <- df_forage[df_forage$State == "FFR",]
+
+#Removing unused levels
+df_fruit <- droplevels(df_fruit)
+
+df_color <- read.csv("colors_final_final.csv")
+df_fruit <- df_fruit %>% left_join(., df_color, by = c("Taxon" = "Taxon" 
+))
+
+#subsetting by only fruits with assigned color categories
+df_fruit <- df_fruit[df_fruit$ColourCategory == "con" |df_fruit$ColourCategory == "cry" | df_fruit$ColourCategory == "dark" | df_fruit$ColourCategory == "con_both"  ,]
+
+
+#Groups the data based on DateTime, MonkeyCode, MonkeyName, Phenotype, Group, ColourCategory, DominanceScale, ReproductiveStatus, TempMax, TempMin, and Rain
+
+df_fruit_grouped <- df_fruit %>% 
+  group_by(DateTime, MonkeyCode, MonkeyName, Phenotype, Group, ColourCategory, DominanceScale, ReproductiveStatus, TempMax, TempMin, Rain) 
+
+
+#These lines count each state for each monkey per rotation and spread them so that one line = one monkeys combined states per rotation
+df_fruit_grouped <- df_fruit_grouped %>%  summarise(Count=n())
+df_fruit_grouped <- df_fruit_grouped %>% ungroup()
+df_fruit_grouped <- df_fruit_grouped %>% spread(ColourCategory,Count)
+
+
+
+
+df_fruit_grouped <- df_fruit_grouped %>% left_join(., combinedDF_rot, by = c("DateTime" = "DateTime"))
+
+#Setting NA's to zero
+df_fruit_grouped[c("con","con_both", "cry", "dark")][is.na(df_fruit_grouped[c("con", "con_both", "cry", "dark")])] <- 0
+
+
+
+#Transforming ecological variables
+df_fruit_transformed <- df_fruit_grouped %>%
+  mutate_at(vars("TempMax", "TempMin", "Rain"), list(~as.numeric(scale(.)))) 
+
+
+
+df_cat <- df_fruit_transformed %>%
+  
+  group_by(Rotation, MonkeyCode) %>%
+  
+  summarise(
+    
+    Group = unique(Group),
+    
+    TempMax = mean(TempMax),
+    
+    TempMin = mean(TempMin),
+    
+    Rain = mean(Rain),
+    
+    con = sum(con),
+    
+    con_both = sum(con_both),
+    
+    cry = sum(cry),
+    
+    dark = sum(dark),
+    
+    DominanceScale = mean(DominanceScale),
+    
+    ReproductiveStatus = unique(ReproductiveStatus),
+    
+    Phenotype = unique(Phenotype))
+
+
+
+
+#The next two lines create total scans column that shows you how many scans that individual was observed in each day
+totals_cat <- fruit_cat_df %>% group_by(Rotation, MonkeyCode = as.factor(MonkeyCode)) %>% 
+summarise(TotalScans=n())
+
+df_cat_final <- df_cat %>% left_join(., totals_cat, by = c("Rotation" = "Rotation", 
+                                                                "MonkeyCode" = "MonkeyCode"
+                                                                ))
+
+df_cat_final <- df_cat_final[!(df_cat_final$TotalScans < 3) ,]
+
+
+df_cat_final$Phenotype <- Recode(df_cat_final$Phenotype, "'D'='Dichromat'; 'T'='Trichromat'")
+df_cat_final$DominanceCategory <- if_else(df_cat_final$DominanceScale <= 0.33, "low", if_else(df_cat_final$DominanceScale > 0.33 & df_cat_final$DominanceScale <= 0.66, "mid","high"))
+
+#Adding a column for scans for fruit that are equally conspicuous or inconspicuous to dichromats and trichromats
+df_cat_final <- df_cat_final %>% mutate(equal_discrimination = dark + cry + con_both)
+
+#Removing a row that contains only NAs
+df_cat_final <- na.omit(df_cat_final)
+
+#Modeling number of scans spent conspicuous fruit foraging
+
+GeneralConFruitModel <- glmer(con ~  
+                                ReproductiveStatus +
+                                DominanceCategory +
+                                Phenotype + 
+                                TempMax +
+                                TempMin + 
+                                Rain +
+                                offset(log(TotalScans)) + 
+                                (1 | Group/MonkeyCode), 
+                              data = df_cat_final,
+                              family = poisson(link = "log"), control = glmerControl(optCtrl = list(maxfun = 1500000)) )
+
+summary(GeneralConFruitModel)
+drop1(GeneralConFruitModel, test = "Chisq")
+Anova(GeneralConFruitModel)
+
+#Statistics on the model
+
+ConModel.lsm <- emmeans(GeneralConFruitModel, "Phenotype", type = "response", adjust = "tukey") #This function displays the LSM
+
+pairs(emmeans(GeneralConFruitModel, "Phenotype", adjust = "tukey"))
+
+
+#Rerunning conspicuous fruit model with an interaction between phenotype and dominance
+Model_interaction <- glmer(con ~  
+                                ReproductiveStatus +
+                                DominanceCategory:Phenotype +
+                                DominanceCategory +
+                                Phenotype +
+                                TempMax +
+                                TempMin + 
+                                Rain +
+                                offset(log(TotalScans)) + 
+                                (1 | Group/MonkeyCode), 
+                              data = df_cat_final,
+                              family = poisson(link = "log"), control = glmerControl(optCtrl = list(maxfun = 1500000)) )
+
+summary(Model_interaction)
+drop1(Model_interaction, test = "Chisq")
+
+```
+
