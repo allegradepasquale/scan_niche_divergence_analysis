@@ -17,7 +17,7 @@ output: html_notebook
 
 #removed Helen from dominance and reproductive status since this dataset is subsetted by adult females
 
-#behavioral data file has PR removed for 2016 (no dominance data) and SF removed for 2017 (disappeared mid season). LV rank has been assumed same as 2007 for 2007
+#behavioral data file has PR removed for 2016 (no dominance data) and SF removed for 2017 (disappeared mid season). LV (Lavender, not the group named LV) rank has been assumed same as 2007 for 2008
 
 #removed erroneous scans where individual from a different group was mistakenly recorded (ie, observing Kiara when cleary the researcher was with LV)
 
@@ -200,7 +200,7 @@ df_budget[c("EFI", "FFR", "FIN", "FOT","RES", "SAC","TRA","VFO", "OTH", "SDI", "
 df_transformed <- df_budget %>%
        mutate_at(vars("TempMax", "TempMin", "Rain"), list(~as.numeric(scale(.)))) 
 
-
+#grouping by rotation and monkey code, summing scans in each state, and averaging weather variables over the rotation, resulting in one row per monkey per rotation
 df_budget2 <- df_transformed %>%
               group_by(Rotation, MonkeyCode) %>%
               summarise(
@@ -230,7 +230,7 @@ df_budget2 <- df_transformed %>%
 
 
 
-#Setting dominance scale as a category
+#Creating a new ordinal variable, DominanceCategory, from DominanceScale
 df_budget2$DominanceCategory <- if_else(df_budget2$DominanceScale <= 0.33, "low", if_else(df_budget2$DominanceScale > 0.33 & df_budget2$DominanceScale <= 0.66, "mid","high"))
 df_budget2$DominanceCategory <- as.factor(df_budget2$DominanceCategory)
 
@@ -380,14 +380,14 @@ df_fruit_grouped <- df_fruit %>%
   group_by(DateTime, MonkeyCode, MonkeyName, Phenotype, Group, ColourCategory, DominanceScale, ReproductiveStatus, TempMax, TempMin, Rain) 
 
 
-#These lines count each state for each monkey per rotation and spread them so that one line = one monkeys combined states per rotation
+#These lines count each state for each monkey per rotation and spread them so that one line = one monkeys combined states per DateTime
 df_fruit_grouped <- df_fruit_grouped %>%  summarise(Count=n())
 df_fruit_grouped <- df_fruit_grouped %>% ungroup()
 df_fruit_grouped <- df_fruit_grouped %>% spread(ColourCategory,Count)
 
 
 
-
+#Joining the rotation DF 
 df_fruit_grouped <- df_fruit_grouped %>% left_join(., combinedDF_rot, by = c("DateTime" = "DateTime"))
 
 #Setting NA's to zero
@@ -400,7 +400,7 @@ df_fruit_transformed <- df_fruit_grouped %>%
   mutate_at(vars("TempMax", "TempMin", "Rain"), list(~as.numeric(scale(.)))) 
 
 
-
+#grouping by rotation and monkey code, summing fruit conspicuity scans, and averaging weather variables over the rotation, resulting in one row per monkey per rotation
 df_cat <- df_fruit_transformed %>%
   
   group_by(Rotation, MonkeyCode) %>%
@@ -442,8 +442,11 @@ df_cat_final <- df_cat %>% left_join(., totals_cat, by = c("Rotation" = "Rotatio
 #Subsetting to include monkeys that have 3 or greater total scans per rotation
 df_cat_final <- df_cat_final[!(df_cat_final$TotalScans < 3) ,]
 
-
+#Recoding the phenotype variable 
 df_cat_final$Phenotype <- Recode(df_cat_final$Phenotype, "'D'='Dichromat'; 'T'='Trichromat'")
+
+#Creating a new ordinal variable, DominanceCategory, from DominanceScale
+
 df_cat_final$DominanceCategory <- if_else(df_cat_final$DominanceScale <= 0.33, "low", if_else(df_cat_final$DominanceScale > 0.33 & df_cat_final$DominanceScale <= 0.66, "mid","high"))
 
 #Adding a column for scans for fruit that are equally conspicuous or inconspicuous to dichromats and trichromats
