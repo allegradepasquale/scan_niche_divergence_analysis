@@ -439,7 +439,7 @@ summarise(TotalScans=n())
 df_cat_final <- df_cat %>% left_join(., totals_cat, by = c("Rotation" = "Rotation", 
                                                                 "MonkeyCode" = "MonkeyCode"
                                                                 ))
-
+#Subsetting to include monkeys that have 3 or greater total scans per rotation
 df_cat_final <- df_cat_final[!(df_cat_final$TotalScans < 3) ,]
 
 
