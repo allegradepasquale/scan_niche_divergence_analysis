@@ -115,7 +115,7 @@ combinedDF_rot <- combinedDF_rot %>% mutate(DateTime = as_datetime(DateOfYear)) 
   dplyr::select(-DateOfYear)
 combinedDF_rot$DateTime <- as.Date(combinedDF_rot$DateTime)
 
-
+#Removing column X and filtering to unique rotation-date pairs
 combinedDF_rot <- combinedDF_rot %>%
 
                  dplyr::select(-X) %>% 
